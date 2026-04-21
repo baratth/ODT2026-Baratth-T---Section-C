@@ -1,0 +1,251 @@
+from machine import Pin, I2C
+import neopixel, time, random
+from i2c_lcd import I2cLcd
+
+# -----------------------------
+# SETUP
+# -----------------------------
+i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400000)
+lcd = I2cLcd(i2c, 0x27, 2, 16)
+
+# INPUTS
+ir = Pin(26, Pin.IN)
+
+btn1 = Pin(16, Pin.IN, Pin.PULL_UP)
+btn2 = Pin(17, Pin.IN, Pin.PULL_UP)
+
+t1 = Pin(35, Pin.IN)   # target 1 (any hit)
+t2 = Pin(33, Pin.IN)   # target 2 (any hit)
+
+# OUTPUTS
+laser = Pin(12, Pin.OUT)
+laser.on()
+
+buzzer = Pin(15, Pin.OUT)
+
+ring = neopixel.NeoPixel(Pin(14), 16)
+strip1 = neopixel.NeoPixel(Pin(25), 60)
+strip2 = neopixel.NeoPixel(Pin(27), 60)
+
+# LEVEL CONFIG
+level_hits = [3, 6, 9, 12, 16]
+
+# -----------------------------
+# HELPERS
+# -----------------------------
+def clear_ring():
+    for i in range(16):
+        ring[i] = (0, 0, 0)
+    ring.write()
+
+def clear_strips():
+    for i in range(60):
+        strip1[i] = (0, 0, 0)
+        strip2[i] = (0, 0, 0)
+    strip1.write()
+    strip2.write()
+
+def clear_leds():
+    clear_ring()
+    clear_strips()
+
+def success_flash(i):
+    if i < 16:
+        ring[i] = (0, 255, 0)
+    strip1[i % 60] = (0, 255, 0)
+    strip2[i % 60] = (0, 255, 0)
+    ring.write()
+    strip1.write()
+    strip2.write()
+
+def fail_flash(i):
+    if i < 16:
+        ring[i] = (255, 0, 0)
+    strip1[i % 60] = (255, 0, 0)
+    strip2[i % 60] = (255, 0, 0)
+    ring.write()
+    strip1.write()
+    strip2.write()
+
+def blink_strips(color, times):
+    for _ in range(times):
+        for i in range(60):
+            strip1[i] = color
+            strip2[i] = color
+        strip1.write()
+        strip2.write()
+        time.sleep_ms(200)
+        clear_strips()
+        time.sleep_ms(150)
+
+def strobe_strips(color, flashes=8):
+    for _ in range(flashes):
+        for i in range(60):
+            strip1[i] = color
+            strip2[i] = color
+        strip1.write()
+        strip2.write()
+        time.sleep_ms(60)
+        clear_strips()
+        time.sleep_ms(40)
+
+def win_strobe_green():
+    strobe_strips((0, 255, 0), 14)
+
+def ring_fill(n, color):
+    clear_ring()
+    for i in range(min(n, 16)):
+        ring[i] = color
+    ring.write()
+
+def ring_flash(color):
+    for _ in range(3):
+        for i in range(16):
+            ring[i] = color
+        ring.write()
+        time.sleep_ms(120)
+        clear_ring()
+        time.sleep_ms(80)
+
+def countdown():
+    lcd.clear()
+    lcd.putstr("READY")
+    ring_fill(16, (255, 100, 0))
+    time.sleep(1)
+
+    lcd.clear()
+    lcd.putstr("STEADY")
+    ring_fill(8, (255, 255, 0))
+    time.sleep(1)
+
+    lcd.clear()
+    lcd.putstr("GO!")
+    ring_flash((0, 255, 0))
+
+def wait_release():
+    while t1.value() == 1 or t2.value() == 0:
+        time.sleep_ms(10)
+
+def show_sequence(sequence):
+    lcd.clear()
+    lcd.putstr("REMEMBER")
+    lcd.move_to(0, 1)
+    lcd.putstr(",".join(str(x) for x in sequence)[:16])
+
+def show_score(score):
+    lcd.clear()
+    lcd.putstr("SCORE:")
+    lcd.move_to(0, 1)
+    lcd.putstr(str(score))
+
+# -----------------------------
+# MAIN LOOP
+# -----------------------------
+while True:
+
+    lcd.clear()
+    lcd.putstr("PICK CONTROLLER")
+    while ir.value() == 0:
+        pass
+
+    countdown()
+
+    score = 0
+    level = 0
+    won = True
+
+    while level < 5:
+
+        hits = level_hits[level]
+        sequence = [random.randint(1, 2) for _ in range(hits)]
+
+        show_sequence(sequence)
+        time.sleep(2)
+
+        # -------- SHOOTING --------
+        for i in range(hits):
+
+            target = sequence[i]
+            hit = False
+
+            lcd.clear()
+            lcd.putstr("SHOOT:")
+            lcd.move_to(0, 1)
+            lcd.putstr(str(target))
+
+            while not hit:
+                if target == 1 and t1.value() == 1:
+                    score += 3
+                    lcd.clear()
+                    lcd.putstr("+3")
+                    hit = True
+
+                elif target == 2 and t2.value() == 0:
+                    score += 3
+                    lcd.clear()
+                    lcd.putstr("+3")
+                    hit = True
+
+                time.sleep_ms(10)
+
+            wait_release()
+            time.sleep_ms(200)
+
+        # -------- RECALL --------
+        lcd.clear()
+        lcd.putstr("REPLICATE")
+
+        correct = True
+
+        for i in range(len(sequence)):
+
+            while True:
+                if btn1.value() == 0:
+                    user = 1
+                    time.sleep_ms(200)
+                    while btn1.value() == 0: pass
+                    break
+
+                if btn2.value() == 0:
+                    user = 2
+                    time.sleep_ms(200)
+                    while btn2.value() == 0: pass
+                    break
+
+            if user == sequence[i]:
+                success_flash(i)
+            else:
+                fail_flash(i)
+                blink_strips((255, 0, 0), 2)
+                strobe_strips((255, 0, 0))
+                correct = False
+                break
+
+            time.sleep(0.3)
+
+        if correct:
+            blink_strips((0, 255, 0), 2)
+            lcd.clear()
+            lcd.putstr("LEVEL UP")
+            time.sleep(1)
+            level += 1
+            clear_leds()
+        else:
+            won = False
+            lcd.clear()
+            lcd.putstr("GAME OVER")
+            break
+
+    # -------- END --------
+    show_score(score)
+
+    if won and level == 5:
+        win_strobe_green()
+        time.sleep(3)
+        lcd.clear()
+        lcd.putstr("PLACE THE")
+        lcd.move_to(0, 1)
+        lcd.putstr("CONTROLLER --->")
+
+    while ir.value() == 1:
+        pass
